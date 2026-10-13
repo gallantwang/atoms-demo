@@ -10,37 +10,17 @@ const SYSTEM_PROMPT = {
 5. 不要输出解释、前言、后记或第二个代码块`,
 }
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-}
-
-interface Env {
-  ZHIPU_API_KEY: string
-}
-
-export async function onRequestOptions() {
-  return new Response(null, { status: 204, headers: corsHeaders })
-}
-
-export async function onRequestPost(context: { request: Request; env: Env }) {
-  const { request, env } = context
-
-  if (!env.ZHIPU_API_KEY) {
-    return json({ error: 'Missing ZHIPU_API_KEY' }, 500)
-  }
-
+export async function onRequestPost(context) {
   try {
-    const { messages = [], model = 'glm-5.3-flash' } = await request.json()
+    const { messages = [], model = 'glm-5.3-flash' } = await context.request.json()
     const conversation = Array.isArray(messages)
-      ? messages.filter((m: { role?: string }) => m?.role !== 'system')
+      ? messages.filter((m) => m?.role !== 'system')
       : []
 
     const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${env.ZHIPU_API_KEY}`,
+        Authorization: `Bearer ${context.env.ZHIPU_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -52,28 +32,23 @@ export async function onRequestPost(context: { request: Request; env: Env }) {
 
     if (!response.ok) {
       const error = await response.text()
-      return json({ error }, response.status)
+      return new Response(JSON.stringify({ error }), {
+        status: response.status,
+        headers: { 'Content-Type': 'application/json' },
+      })
     }
 
     return new Response(response.body, {
       headers: {
-        ...corsHeaders,
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-cache, no-transform',
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
       },
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error'
-    return json({ error: message }, 500)
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    })
   }
-}
-
-function json(data: unknown, status: number) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      ...corsHeaders,
-      'Content-Type': 'application/json',
-    },
-  })
 }
