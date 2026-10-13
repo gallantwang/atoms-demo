@@ -35,29 +35,47 @@ const previewHtml = computed(() => getPreviewHtml(lastAssistantContent.value))
 function getPreviewHtml(content) {
   if (!content) return ''
 
-  const lower = content.toLowerCase()
-  const htmlEnd = lower.lastIndexOf('</html>')
-  if (htmlEnd !== -1) {
-    const before = lower.slice(0, htmlEnd)
-    const doctypeStart = before.lastIndexOf('<!doctype')
-    const htmlStart = before.lastIndexOf('<html')
-    const start = doctypeStart !== -1 ? doctypeStart : htmlStart
-    if (start !== -1) {
-      return content.slice(start, htmlEnd + '</html>'.length).trim()
-    }
-  }
+  const text = content.replace(/\r\n/g, '\n')
+  const lower = text.toLowerCase()
 
-  const open = content.match(/```html\b/i)
-  if (open && open.index != null) {
-    const afterOpenNl = content.indexOf('\n', open.index)
-    const bodyStart = afterOpenNl === -1 ? open.index + open[0].length : afterOpenNl + 1
-    const close = content.lastIndexOf('```')
-    if (close >= bodyStart) {
-      return content.slice(bodyStart, close).trim()
-    }
-  }
+  const complete = sliceHtmlDocument(text, lower)
+  if (complete) return complete
+
+  const fenced = sliceFencedHtml(text)
+  if (fenced) return fenced
+
+  const looseStart = indexOfHtmlStart(lower)
+  if (looseStart !== -1) return text.slice(looseStart).trim()
 
   return ''
+}
+
+function indexOfHtmlStart(lower, end = lower.length) {
+  const region = lower.slice(0, end)
+  const doctypeStart = region.lastIndexOf('<!doctype')
+  if (doctypeStart !== -1) return doctypeStart
+  return region.lastIndexOf('<html')
+}
+
+function sliceHtmlDocument(text, lower) {
+  const htmlEnd = lower.lastIndexOf('</html>')
+  if (htmlEnd === -1) return ''
+  const start = indexOfHtmlStart(lower, htmlEnd)
+  if (start === -1) return ''
+  return text.slice(start, htmlEnd + '</html>'.length).trim()
+}
+
+function sliceFencedHtml(text) {
+  const open = text.match(/```(?:html|htm|xml)?[ \t]*\n?/i)
+  if (!open || open.index == null) return ''
+
+  const bodyStart = open.index + open[0].length
+  const rest = text.slice(bodyStart)
+  const close = rest.lastIndexOf('```')
+  const body = (close !== -1 ? rest.slice(0, close) : rest).trim()
+  if (!body) return ''
+  if (!/<[!a-z]/i.test(body)) return ''
+  return body
 }
 
 function createEmptyProject() {
