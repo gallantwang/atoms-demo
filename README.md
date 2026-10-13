@@ -1,6 +1,6 @@
 # Atoms Demo
 
-模仿 [Atoms](https://atoms.dev) 的 AI 应用生成器 Demo，用于应聘笔试：用自然语言描述需求，模型生成完整 HTML 应用，并在页面内实时预览。
+模仿 [Atoms](https://atoms.dev) 的 AI 应用生成器 Demo，用自然语言描述需求，模型生成完整 HTML 应用，并在页面内实时预览。
 
 ## 1. 项目简介
 
