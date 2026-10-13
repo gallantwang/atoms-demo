@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "wrangler pages dev -- vite",
+    "dev:vite": "vite",
     "build": "vite build",
-    "preview": "vite preview",
+    "preview": "npm run build && wrangler pages dev dist",
+    "deploy": "npm run build && wrangler pages deploy dist",
     "lint": "run-s \"lint:*\"",
     "lint:oxlint": "oxlint . --fix",
     "lint:eslint": "eslint . --fix --cache",
@@ -30,7 +32,8 @@
     "prettier": "3.9.6",
     "vite": "^8.2.2",
     "vite-plugin-vue-devtools": "^8.2.1",
-    "vue-eslint-parser": "^10.4.1"
+    "vue-eslint-parser": "^10.4.1",
+    "wrangler": "^4.150.0"
   },
   "engines": {
     "node": "^22.18.0 || >=24.12.0"
