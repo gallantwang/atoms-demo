@@ -2,6 +2,18 @@
 export const config = {
     runtime: 'edge', // 关键！用 Edge Runtime 解决 Vercel 访问国内 API 超时的问题
   };
+
+const SYSTEM_PROMPT = {
+  role: 'system',
+  content: `你是 Atoms，一个 AI 应用生成器。用户会描述想要的 Web 应用，你必须生成一个可独立运行的完整 HTML 页面。
+
+强制输出规则：
+1. 只输出一个 markdown 代码块，格式必须是 \`\`\`html ... \`\`\`
+2. 代码块内必须是完整 HTML 文档，从 <!DOCTYPE html> 开始，包含 <html>、<head>、<body>
+3. 所有 CSS 写在 <style> 里，所有 JS 写在 <script> 里，禁止依赖外部 CDN、图片或字体（可用系统字体和纯 CSS）
+4. 页面必须可直接在 iframe 的 srcdoc 中运行：布局完整、样式精致、交互可用
+5. 不要输出解释、前言、后记或第二个代码块`,
+};
   
   export default async function handler(req: Request) {
     if (req.method !== 'POST') {
@@ -10,8 +22,11 @@ export const config = {
   
     try {
       // 模型名称已根据你的截图修改为 glm-5.3-flash
-      const { messages, model = 'glm-5.3-flash' } = await req.json();
-  
+      const { messages = [], model = 'glm-5.3-flash' } = await req.json();
+      const conversation = Array.isArray(messages)
+        ? messages.filter((m: { role?: string }) => m?.role !== 'system')
+        : [];
+
       const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
         method: 'POST',
         headers: {
@@ -20,7 +35,7 @@ export const config = {
         },
         body: JSON.stringify({
           model: model,
-          messages: messages,
+          messages: [SYSTEM_PROMPT, ...conversation],
           stream: true, // 开启流式输出
         }),
       });
