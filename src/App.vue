@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, nextTick, watch, computed } from 'vue'
+import { ref, onMounted, nextTick, computed } from 'vue'
 
 const STORAGE_KEY = 'atoms_demo_projects'
 
@@ -30,15 +30,13 @@ const lastAssistantContent = computed(() => {
   return ''
 })
 
-const previewHtml = computed(() => getPreviewHtml(lastAssistantContent.value))
-
+// ============ HTML 提取 + viewport 注入 ============
 function getPreviewHtml(content) {
   if (!content) return ''
 
   const text = content.replace(/\r\n/g, '\n')
   const lower = text.toLowerCase()
 
-  // 工具：找到 HTML 文档的起始位置
   const findStart = (str) => {
     const docIdx = str.indexOf('<!doctype')
     const htmlIdx = str.indexOf('<html')
@@ -72,40 +70,43 @@ function getPreviewHtml(content) {
     }
   }
 
-  // 策略 3：兜底，从 <!DOCTYPE 或 <html 起到末尾
+  // 策略 3：兜底
   if (start1 !== -1) return text.slice(start1).trim()
 
   return ''
 }
 
-function indexOfHtmlStart(lower, end = lower.length) {
-  const region = lower.slice(0, end)
-  const doctypeStart = region.lastIndexOf('<!doctype')
-  if (doctypeStart !== -1) return doctypeStart
-  return region.lastIndexOf('<html')
+// 给 HTML 注入 viewport meta，避免移动端错位
+function injectViewport(html) {
+  if (!html) return ''
+  if (/<meta[^>]*name=["']viewport["']/i.test(html)) return html
+  const meta = '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head([^>]*)>/i, `<head$1>${meta}`)
+  }
+  // 没有 head，插到 <html> 后面或最前面
+  if (/<html[^>]*>/i.test(html)) {
+    return html.replace(/<html([^>]*)>/i, `<html$1><head>${meta}</head>`)
+  }
+  return meta + html
 }
 
-function sliceHtmlDocument(text, lower) {
-  const htmlEnd = lower.lastIndexOf('</html>')
-  if (htmlEnd === -1) return ''
-  const start = indexOfHtmlStart(lower, htmlEnd)
-  if (start === -1) return ''
-  return text.slice(start, htmlEnd + '</html>'.length).trim()
+const previewHtml = computed(() => injectViewport(getPreviewHtml(lastAssistantContent.value)))
+
+// 预览区刷新 / 新窗口
+const previewKey = ref(0)
+function refreshPreview() {
+  previewKey.value++
+}
+function openPreviewInNewTab() {
+  const html = previewHtml.value
+  if (!html) return
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  window.open(url, '_blank')
 }
 
-function sliceFencedHtml(text) {
-  const open = text.match(/```(?:html|htm|xml)?[ \t]*\n?/i)
-  if (!open || open.index == null) return ''
-
-  const bodyStart = open.index + open[0].length
-  const rest = text.slice(bodyStart)
-  const close = rest.lastIndexOf('```')
-  const body = (close !== -1 ? rest.slice(0, close) : rest).trim()
-  if (!body) return ''
-  if (!/<[!a-z]/i.test(body)) return ''
-  return body
-}
-
+// ============ 项目管理 ============
 function createEmptyProject() {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -189,6 +190,7 @@ function maybeRename(project, text) {
   if (name) project.name = name
 }
 
+// ============ 对话 / 流式 ============
 async function sendMessage() {
   const text = inputText.value.trim()
   const project = currentProject.value
@@ -209,8 +211,7 @@ async function sendMessage() {
   try {
     await streamAssistant(project, assistant)
   } catch (error) {
-    assistant.content =
-      assistant.content || `生成失败：${error.message || '请稍后重试'}`
+    assistant.content = assistant.content || `生成失败：${error.message || '请稍后重试'}`
   } finally {
     isStreaming.value = false
     project.updatedAt = Date.now()
@@ -365,13 +366,28 @@ onMounted(() => {
           <span class="live-dot" :class="{ on: !!previewHtml }"></span>
           <span>实时预览</span>
           <span class="hint">{{ previewHtml ? '已提取 HTML' : '等待代码块' }}</span>
+          <div class="preview-actions">
+            <button
+              v-if="previewHtml"
+              type="button"
+              title="刷新预览"
+              @click="refreshPreview"
+            >↻ 刷新</button>
+            <button
+              v-if="previewHtml"
+              type="button"
+              title="新窗口打开"
+              @click="openPreviewInNewTab"
+            >↗ 新窗口</button>
+          </div>
         </header>
         <div class="preview-frame">
           <iframe
-            v-if="currentProject && currentProject.messages.length > 0"
+            v-if="previewHtml"
+            :key="previewKey"
             :srcdoc="previewHtml"
             class="preview-iframe"
-            sandbox="allow-scripts"
+            sandbox="allow-scripts allow-forms allow-modals allow-popups"
             title="应用预览"
           ></iframe>
           <div v-else class="preview-empty">生成的应用会在这里实时渲染</div>
@@ -700,7 +716,7 @@ onMounted(() => {
 }
 
 .preview {
-  height: 40vh;
+  height: 50vh;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -714,7 +730,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 36px;
+  height: 40px;
   padding: 0 12px;
   border-bottom: 1px solid #27272a;
   color: #a1a1aa;
@@ -739,17 +755,45 @@ onMounted(() => {
   font-weight: 500;
 }
 
+.preview-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: 12px;
+}
+
+.preview-actions button {
+  background: transparent;
+  border: 1px solid #3f3f46;
+  color: #a1a1aa;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.preview-actions button:hover {
+  background: #27272a;
+  color: #fafafa;
+  border-color: #52525b;
+}
+
 .preview-frame {
   flex: 1;
   min-height: 0;
   background: #fff;
 }
 
-.frame {
+.preview-iframe {
   width: 100%;
   height: 100%;
   border: 0;
   background: #fff;
+  display: block;
 }
 
 .preview-empty {
@@ -757,8 +801,7 @@ onMounted(() => {
   display: grid;
   place-items: center;
   color: #71717a;
-  background:
-    linear-gradient(180deg, #fafafa, #f4f4f5);
+  background: linear-gradient(180deg, #fafafa, #f4f4f5);
   font-size: 13px;
 }
 
