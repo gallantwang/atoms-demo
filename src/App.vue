@@ -46,7 +46,6 @@ function getPreviewHtml(content) {
     return Math.min(docIdx, htmlIdx)
   }
 
-  // 策略 1：完整文档
   const start1 = findStart(lower)
   if (start1 !== -1) {
     const end1 = lower.lastIndexOf('</html>')
@@ -55,7 +54,6 @@ function getPreviewHtml(content) {
     }
   }
 
-  // 策略 2：```html 代码块
   const matches = [...text.matchAll(/```(?:html|HTML)?\s*\n([\s\S]*?)```/g)]
   for (const m of matches) {
     const code = (m[1] || '').trim()
@@ -70,7 +68,6 @@ function getPreviewHtml(content) {
     }
   }
 
-  // 策略 3：兜底
   if (start1 !== -1) return text.slice(start1).trim()
 
   return ''
@@ -89,11 +86,13 @@ function injectViewport(html) {
   return meta + html
 }
 
-// 只在流式结束后更新预览，避免 iframe 被高频重载
+// 预览 HTML：从项目切换、历史加载时同步
 const previewHtml = ref('')
+
 watch(
-  [lastAssistantContent, isStreaming],
-  ([content, streaming]) => {
+  [currentId, lastAssistantContent, isStreaming],
+  ([, content, streaming]) => {
+    // 流式过程中不更新，等结束
     if (streaming) return
     previewHtml.value = injectViewport(getPreviewHtml(content))
   },
@@ -149,6 +148,7 @@ function createProject() {
   const project = createEmptyProject()
   projects.value.unshift(project)
   currentId.value = project.id
+  previewHtml.value = ''
   persist()
   nextTick(() => inputRef.value?.focus())
 }
@@ -211,29 +211,38 @@ async function sendMessage() {
   await nextTick()
   scrollChat()
 
-  const assistant = { role: 'assistant', content: '' }
-  project.messages.push(assistant)
+  // 关键：用索引访问，走 proxy
+  const assistantIndex = project.messages.length
+  project.messages.push({ role: 'assistant', content: '' })
   isStreaming.value = true
 
   try {
-    await streamAssistant(project, assistant)
+    await streamAssistant(project, assistantIndex)
   } catch (error) {
-    assistant.content = assistant.content || `生成失败：${error.message || '请稍后重试'}`
+    const msg = project.messages[assistantIndex]
+    if (msg && !msg.content) {
+      msg.content = `生成失败：${error.message || '请稍后重试'}`
+    }
   } finally {
     isStreaming.value = false
     project.updatedAt = Date.now()
     persist()
+
+    // 关键：流式结束后，直接用最终内容更新预览（双保险，不依赖 watch）
+    const finalContent = project.messages[assistantIndex]?.content || ''
+    previewHtml.value = injectViewport(getPreviewHtml(finalContent))
+
     await nextTick()
     scrollChat()
     inputRef.value?.focus()
   }
 }
 
-async function streamAssistant(project, assistant) {
+async function streamAssistant(project, assistantIndex) {
   const payload = {
     messages: [
       SYSTEM_PROMPT,
-      ...project.messages.filter((m) => m !== assistant && m.content),
+      ...project.messages.filter((m, i) => i !== assistantIndex && m.content),
     ],
   }
 
@@ -261,17 +270,17 @@ async function streamAssistant(project, assistant) {
     buffer = lines.pop() ?? ''
 
     for (const line of lines) {
-      applySseLine(line, assistant)
+      applySseLine(line, project, assistantIndex)
     }
     project.updatedAt = Date.now()
     await nextTick()
     scrollChat()
   }
 
-  if (buffer.trim()) applySseLine(buffer, assistant)
+  if (buffer.trim()) applySseLine(buffer, project, assistantIndex)
 }
 
-function applySseLine(line, assistant) {
+function applySseLine(line, project, assistantIndex) {
   const trimmed = line.trim()
   if (!trimmed.startsWith('data:')) return
   const data = trimmed.slice(5).trim()
@@ -280,7 +289,8 @@ function applySseLine(line, assistant) {
     const json = JSON.parse(data)
     const delta = json.choices?.[0]?.delta?.content
     if (typeof delta === 'string' && delta) {
-      assistant.content += delta
+      // 关键：通过 project.messages[索引] 走 proxy，触发响应式
+      project.messages[assistantIndex].content += delta
     }
   } catch {
     /* skip incomplete json chunks */
