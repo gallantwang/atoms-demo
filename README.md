@@ -89,4 +89,4 @@ npm run deploy
 ## 8. 备注
 1. **LLM 依赖**：Demo 调用智谱 GLM-5.3-Flash，当前使用免费额度，可正常交互。
 2. **开发工具**：本项目使用 Cursor（Agent 模式）+ Claude 4.5 完成开发。
-3. **联系方式**：如 Demo 出现 401 或异常，请联系 [你的邮箱] 更新 API Key。
+3. **联系方式**：如 Demo 出现 401 或异常，请联系更新 API Key。
