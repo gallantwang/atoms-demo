@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, nextTick, computed } from 'vue'
+import { ref, onMounted, nextTick, computed, watch } from 'vue'
 
 const STORAGE_KEY = 'atoms_demo_projects'
 
@@ -46,7 +46,7 @@ function getPreviewHtml(content) {
     return Math.min(docIdx, htmlIdx)
   }
 
-  // 策略 1：从完整文本里找 <!DOCTYPE ...> 到 </html>
+  // 策略 1：完整文档
   const start1 = findStart(lower)
   if (start1 !== -1) {
     const end1 = lower.lastIndexOf('</html>')
@@ -55,7 +55,7 @@ function getPreviewHtml(content) {
     }
   }
 
-  // 策略 2：从 ```html 或 ``` 代码块里提取
+  // 策略 2：```html 代码块
   const matches = [...text.matchAll(/```(?:html|HTML)?\s*\n([\s\S]*?)```/g)]
   for (const m of matches) {
     const code = (m[1] || '').trim()
@@ -76,7 +76,6 @@ function getPreviewHtml(content) {
   return ''
 }
 
-// 给 HTML 注入 viewport meta，避免移动端错位
 function injectViewport(html) {
   if (!html) return ''
   if (/<meta[^>]*name=["']viewport["']/i.test(html)) return html
@@ -84,16 +83,24 @@ function injectViewport(html) {
   if (/<head[^>]*>/i.test(html)) {
     return html.replace(/<head([^>]*)>/i, `<head$1>${meta}`)
   }
-  // 没有 head，插到 <html> 后面或最前面
   if (/<html[^>]*>/i.test(html)) {
     return html.replace(/<html([^>]*)>/i, `<html$1><head>${meta}</head>`)
   }
   return meta + html
 }
 
-const previewHtml = computed(() => injectViewport(getPreviewHtml(lastAssistantContent.value)))
+// 只在流式结束后更新预览，避免 iframe 被高频重载
+const previewHtml = ref('')
+watch(
+  [lastAssistantContent, isStreaming],
+  ([content, streaming]) => {
+    if (streaming) return
+    previewHtml.value = injectViewport(getPreviewHtml(content))
+  },
+  { immediate: true }
+)
 
-// 预览区刷新 / 新窗口
+// 预览刷新 / 新窗口
 const previewKey = ref(0)
 function refreshPreview() {
   previewKey.value++
@@ -365,7 +372,9 @@ onMounted(() => {
         <header class="preview-bar">
           <span class="live-dot" :class="{ on: !!previewHtml }"></span>
           <span>实时预览</span>
-          <span class="hint">{{ previewHtml ? '已提取 HTML' : '等待代码块' }}</span>
+          <span class="hint">
+            {{ isStreaming ? '生成中…' : previewHtml ? '已提取 HTML' : '等待代码块' }}
+          </span>
           <div class="preview-actions">
             <button
               v-if="previewHtml"
@@ -390,7 +399,9 @@ onMounted(() => {
             sandbox="allow-scripts allow-forms allow-modals allow-popups"
             title="应用预览"
           ></iframe>
-          <div v-else class="preview-empty">生成的应用会在这里实时渲染</div>
+          <div v-else class="preview-empty">
+            {{ isStreaming ? '正在生成应用，请稍候…' : '生成的应用会在这里实时渲染' }}
+          </div>
         </div>
       </section>
 
