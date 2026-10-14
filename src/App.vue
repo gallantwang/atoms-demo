@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, onMounted, nextTick, watch, computed } from 'vue'
 
 const STORAGE_KEY = 'atoms_demo_projects'
 
@@ -38,14 +38,42 @@ function getPreviewHtml(content) {
   const text = content.replace(/\r\n/g, '\n')
   const lower = text.toLowerCase()
 
-  const complete = sliceHtmlDocument(text, lower)
-  if (complete) return complete
+  // 工具：找到 HTML 文档的起始位置
+  const findStart = (str) => {
+    const docIdx = str.indexOf('<!doctype')
+    const htmlIdx = str.indexOf('<html')
+    if (docIdx === -1 && htmlIdx === -1) return -1
+    if (docIdx === -1) return htmlIdx
+    if (htmlIdx === -1) return docIdx
+    return Math.min(docIdx, htmlIdx)
+  }
 
-  const fenced = sliceFencedHtml(text)
-  if (fenced) return fenced
+  // 策略 1：从完整文本里找 <!DOCTYPE ...> 到 </html>
+  const start1 = findStart(lower)
+  if (start1 !== -1) {
+    const end1 = lower.lastIndexOf('</html>')
+    if (end1 !== -1 && end1 > start1) {
+      return text.slice(start1, end1 + 7).trim()
+    }
+  }
 
-  const looseStart = indexOfHtmlStart(lower)
-  if (looseStart !== -1) return text.slice(looseStart).trim()
+  // 策略 2：从 ```html 或 ``` 代码块里提取
+  const matches = [...text.matchAll(/```(?:html|HTML)?\s*\n([\s\S]*?)```/g)]
+  for (const m of matches) {
+    const code = (m[1] || '').trim()
+    if (/<html|<!doctype/i.test(code)) {
+      const codeLower = code.toLowerCase()
+      const s = findStart(codeLower)
+      if (s !== -1) {
+        const e = codeLower.lastIndexOf('</html>')
+        if (e !== -1 && e > s) return code.slice(s, e + 7).trim()
+        return code.slice(s).trim()
+      }
+    }
+  }
+
+  // 策略 3：兜底，从 <!DOCTYPE 或 <html 起到末尾
+  if (start1 !== -1) return text.slice(start1).trim()
 
   return ''
 }
@@ -340,10 +368,10 @@ onMounted(() => {
         </header>
         <div class="preview-frame">
           <iframe
-            v-if="previewHtml"
-            class="frame"
-            sandbox="allow-scripts allow-forms allow-modals"
+            v-if="currentProject && currentProject.messages.length > 0"
             :srcdoc="previewHtml"
+            class="preview-iframe"
+            sandbox="allow-scripts"
             title="应用预览"
           ></iframe>
           <div v-else class="preview-empty">生成的应用会在这里实时渲染</div>
