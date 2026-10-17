@@ -39,6 +39,8 @@ __screenshots__/
 *.timestamp-*-*.mjs
 
 .vercel
-.env*
+.env
+.env.local
+.env.*.local
 .dev.vars
 .wrangler
