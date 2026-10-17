@@ -10,10 +10,42 @@ const SYSTEM_PROMPT = {
 5. 不要输出解释、前言、后记或第二个代码块`,
 }
 
+// ⚠️ 请确认这里的 URL 是你的 Supabase 项目 URL
+const SUPABASE_URL = 'https://vzkckffanbcopzugmdkc.supabase.co'
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url)
 
+    // ==========================================
+    // 1. 代理 Supabase 请求 (绕过本地网络封锁)
+    // ==========================================
+    if (url.pathname.startsWith('/supabase')) {
+      // 移除 '/supabase' 前缀，拼接到真实 Supabase 域名上
+      const targetPath = url.pathname.replace('/supabase', '')
+      const targetUrl = new URL(targetPath + url.search, SUPABASE_URL)
+
+      // 复制请求头，并删除可能导致冲突的 host
+      const newHeaders = new Headers(request.headers)
+      newHeaders.delete('host')
+      
+      // 发起真实的请求
+      const response = await fetch(targetUrl.toString(), {
+        method: request.method,
+        headers: newHeaders,
+        body: request.body,
+      })
+
+      // 复制响应并返回，处理一些必要的头（如 Set-Cookie 等）
+      const newResponse = new Response(response.body, response)
+      // 如果前端和 Worker 同源，其实不需要 CORS，但加一层保险
+      newResponse.headers.set('Access-Control-Allow-Origin', '*')
+      return newResponse
+    }
+
+    // ==========================================
+    // 2. 智谱大模型 API 转发
+    // ==========================================
     if (url.pathname === '/api/chat' && request.method === 'POST') {
       try {
         const { messages = [], model = 'glm-5.3-flash' } = await request.json()
@@ -57,6 +89,9 @@ export default {
       }
     }
 
+    // ==========================================
+    // 3. 静态资源兜底
+    // ==========================================
     return env.ASSETS.fetch(request)
   },
 }

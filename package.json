@@ -15,6 +15,7 @@
     "format": "prettier --write --experimental-cli src/"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.118.0",
     "element-plus": "^2.14.7",
     "vue": "^3.5.42"
   },

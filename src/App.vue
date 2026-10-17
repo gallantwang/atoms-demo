@@ -1,7 +1,6 @@
 <script setup>
 import { ref, onMounted, nextTick, computed, watch } from 'vue'
-
-const STORAGE_KEY = 'atoms_demo_projects'
+import { supabase } from './supabase'
 
 const SYSTEM_PROMPT = {
   role: 'system',
@@ -13,6 +12,53 @@ const SYSTEM_PROMPT = {
 4. 除代码块外不要输出多余解释`,
 }
 
+// ============ 1. 用户状态与登录逻辑 ============
+const user = ref(null)
+const authEmail = ref('')
+const authPassword = ref('')
+const authLoading = ref(false)
+const authError = ref('')
+const isLoginView = ref(true)
+
+async function handleAuth() {
+  authError.value = ''
+  authLoading.value = true
+  try {
+    let result
+    if (isLoginView.value) {
+      result = await supabase.auth.signInWithPassword({
+        email: authEmail.value,
+        password: authPassword.value,
+      })
+    } else {
+      result = await supabase.auth.signUp({
+        email: authEmail.value,
+        password: authPassword.value,
+      })
+    }
+    if (result.error) throw result.error
+    user.value = result.data.user
+    if (result.data.session) {
+      await fetchProjects()
+    } else {
+      alert('注册成功！请查收邮箱进行验证（如果在 Supabase 中关闭了邮箱验证则直接登录）。')
+    }
+  } catch (err) {
+    authError.value = err.message || '认证失败'
+  } finally {
+    authLoading.value = false
+  }
+}
+
+async function handleLogout() {
+  await supabase.auth.signOut()
+  user.value = null
+  projects.value = []
+  currentId.value = ''
+  previewHtml.value = ''
+}
+
+// ============ 2. 项目数据与云端同步 ============
 const projects = ref([])
 const currentId = ref('')
 const inputText = ref('')
@@ -30,13 +76,25 @@ const lastAssistantContent = computed(() => {
   return ''
 })
 
-// ============ HTML 提取 + viewport 注入 ============
+// 从 Supabase 获取当前用户的数据
+async function fetchProjects() {
+  if (!user.value) return
+  const { data, error } = await supabase
+    .from('projects')
+    .select('*')
+    .order('updated_at', { ascending: false })
+  
+  if (!error && data) {
+    projects.value = data
+    if (data.length > 0) currentId.value = data[0].id
+  }
+}
+
+// ============ 3. HTML 提取与预览渲染 ============
 function getPreviewHtml(content) {
   if (!content) return ''
-
   const text = content.replace(/\r\n/g, '\n')
   const lower = text.toLowerCase()
-
   const findStart = (str) => {
     const docIdx = str.indexOf('<!doctype')
     const htmlIdx = str.indexOf('<html')
@@ -45,15 +103,11 @@ function getPreviewHtml(content) {
     if (htmlIdx === -1) return docIdx
     return Math.min(docIdx, htmlIdx)
   }
-
   const start1 = findStart(lower)
   if (start1 !== -1) {
     const end1 = lower.lastIndexOf('</html>')
-    if (end1 !== -1 && end1 > start1) {
-      return text.slice(start1, end1 + 7).trim()
-    }
+    if (end1 !== -1 && end1 > start1) return text.slice(start1, end1 + 7).trim()
   }
-
   const matches = [...text.matchAll(/```(?:html|HTML)?\s*\n([\s\S]*?)```/g)]
   for (const m of matches) {
     const code = (m[1] || '').trim()
@@ -67,9 +121,7 @@ function getPreviewHtml(content) {
       }
     }
   }
-
   if (start1 !== -1) return text.slice(start1).trim()
-
   return ''
 }
 
@@ -86,24 +138,18 @@ function injectViewport(html) {
   return meta + html
 }
 
-// 预览 HTML：从项目切换、历史加载时同步
 const previewHtml = ref('')
-
 watch(
   [currentId, lastAssistantContent, isStreaming],
   ([, content, streaming]) => {
-    // 流式过程中不更新，等结束
     if (streaming) return
     previewHtml.value = injectViewport(getPreviewHtml(content))
   },
   { immediate: true }
 )
 
-// 预览刷新 / 新窗口
 const previewKey = ref(0)
-function refreshPreview() {
-  previewKey.value++
-}
+function refreshPreview() { previewKey.value++ }
 function openPreviewInNewTab() {
   const html = previewHtml.value
   if (!html) return
@@ -112,45 +158,25 @@ function openPreviewInNewTab() {
   window.open(url, '_blank')
 }
 
-// ============ 项目管理 ============
-function createEmptyProject() {
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    name: '未命名项目',
-    messages: [],
-    updatedAt: Date.now(),
+// ============ 4. 项目操作 (CRUD) ============
+async function createProject() {
+  if (!user.value) return alert('请先登录')
+  const { data, error } = await supabase
+    .from('projects')
+    .insert({ 
+      user_id: user.value.id, 
+      name: '未命名项目', 
+      messages: [] 
+    })
+    .select()
+    .single()
+
+  if (!error && data) {
+    projects.value.unshift(data)
+    currentId.value = data.id
+    previewHtml.value = ''
+    nextTick(() => inputRef.value?.focus())
   }
-}
-
-function loadProjects() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    const parsed = raw ? JSON.parse(raw) : null
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      projects.value = parsed
-      const latest = [...parsed].sort((a, b) => b.updatedAt - a.updatedAt)[0]
-      currentId.value = latest.id
-      return
-    }
-  } catch {
-    /* ignore broken storage */
-  }
-  const project = createEmptyProject()
-  projects.value = [project]
-  currentId.value = project.id
-}
-
-function persist() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(projects.value))
-}
-
-function createProject() {
-  const project = createEmptyProject()
-  projects.value.unshift(project)
-  currentId.value = project.id
-  previewHtml.value = ''
-  persist()
-  nextTick(() => inputRef.value?.focus())
 }
 
 function selectProject(id) {
@@ -159,27 +185,25 @@ function selectProject(id) {
   nextTick(scrollChat)
 }
 
-function deleteProject(id, event) {
+async function deleteProject(id, event) {
   event.stopPropagation()
   if (isStreaming.value && id === currentId.value) return
-  const index = projects.value.findIndex((p) => p.id === id)
-  if (index === -1) return
-  projects.value.splice(index, 1)
-  if (projects.value.length === 0) {
-    const project = createEmptyProject()
-    projects.value = [project]
-    currentId.value = project.id
-  } else if (currentId.value === id) {
-    currentId.value = projects.value[0].id
+  
+  const { error } = await supabase.from('projects').delete().eq('id', id)
+  if (!error) {
+    projects.value = projects.value.filter(p => p.id !== id)
+    if (projects.value.length === 0) {
+      currentId.value = ''
+    } else if (currentId.value === id) {
+      currentId.value = projects.value[0].id
+    }
   }
-  persist()
 }
 
 function formatTime(ts) {
   const date = new Date(ts)
   const now = new Date()
-  const sameDay = date.toDateString() === now.toDateString()
-  if (sameDay) {
+  if (date.toDateString() === now.toDateString()) {
     return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
   }
   return date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
@@ -197,7 +221,7 @@ function maybeRename(project, text) {
   if (name) project.name = name
 }
 
-// ============ 对话 / 流式 ============
+// ============ 5. 对话与流式生成 ============
 async function sendMessage() {
   const text = inputText.value.trim()
   const project = currentProject.value
@@ -205,13 +229,19 @@ async function sendMessage() {
 
   project.messages.push({ role: 'user', content: text })
   maybeRename(project, text)
-  project.updatedAt = Date.now()
+  project.updated_at = new Date().toISOString()
+  
+  // 保存用户消息
+  await supabase.from('projects').update({ 
+    name: project.name, 
+    messages: project.messages, 
+    updated_at: project.updated_at 
+  }).eq('id', project.id)
+
   inputText.value = ''
-  persist()
   await nextTick()
   scrollChat()
 
-  // 关键：用索引访问，走 proxy
   const assistantIndex = project.messages.length
   project.messages.push({ role: 'assistant', content: '' })
   isStreaming.value = true
@@ -225,10 +255,14 @@ async function sendMessage() {
     }
   } finally {
     isStreaming.value = false
-    project.updatedAt = Date.now()
-    persist()
+    project.updated_at = new Date().toISOString()
+    
+    // 保存 AI 回复
+    await supabase.from('projects').update({ 
+      messages: project.messages, 
+      updated_at: project.updated_at 
+    }).eq('id', project.id)
 
-    // 关键：流式结束后，直接用最终内容更新预览（双保险，不依赖 watch）
     const finalContent = project.messages[assistantIndex]?.content || ''
     previewHtml.value = injectViewport(getPreviewHtml(finalContent))
 
@@ -272,7 +306,6 @@ async function streamAssistant(project, assistantIndex) {
     for (const line of lines) {
       applySseLine(line, project, assistantIndex)
     }
-    project.updatedAt = Date.now()
     await nextTick()
     scrollChat()
   }
@@ -289,12 +322,9 @@ function applySseLine(line, project, assistantIndex) {
     const json = JSON.parse(data)
     const delta = json.choices?.[0]?.delta?.content
     if (typeof delta === 'string' && delta) {
-      // 关键：通过 project.messages[索引] 走 proxy，触发响应式
       project.messages[assistantIndex].content += delta
     }
-  } catch {
-    /* skip incomplete json chunks */
-  }
+  } catch { }
 }
 
 function onKeydown(event) {
@@ -304,21 +334,56 @@ function onKeydown(event) {
   }
 }
 
-onMounted(() => {
-  loadProjects()
-  persist()
-  nextTick(() => inputRef.value?.focus())
+onMounted(async () => {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (session?.user) {
+    user.value = session.user
+    await fetchProjects()
+  }
 })
 </script>
 
 <template>
-  <div class="app">
+  <!-- 登录/注册界面 -->
+  <div v-if="!user" class="auth-container">
+    <div class="auth-box">
+      <div class="brand" style="justify-content: center; margin-bottom: 24px;">
+        <div class="brand-mark" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
+        <div>
+          <h1>Atoms Demo</h1>
+          <p style="text-align: center;">用对话生成 Web 应用</p>
+        </div>
+      </div>
+      
+      <h2 style="text-align: center; margin-bottom: 20px;">{{ isLoginView ? '登录' : '注册' }}账号</h2>
+      
+      <div class="form-group">
+        <input v-model="authEmail" type="email" placeholder="邮箱" />
+      </div>
+      <div class="form-group">
+        <input v-model="authPassword" type="password" placeholder="密码" @keyup.enter="handleAuth" />
+      </div>
+      
+      <p v-if="authError" class="error-msg">{{ authError }}</p>
+      
+      <button class="auth-btn" @click="handleAuth" :disabled="authLoading">
+        {{ authLoading ? '处理中...' : (isLoginView ? '登录' : '注册') }}
+      </button>
+      
+      <p class="toggle-auth" @click="isLoginView = !isLoginView; authError = ''">
+        {{ isLoginView ? '没有账号？去注册' : '已有账号？去登录' }}
+      </p>
+    </div>
+  </div>
+
+  <!-- 主应用界面 -->
+  <div v-else class="app">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark" aria-hidden="true">
-          <span></span>
-          <span></span>
-          <span></span>
+          <span></span><span></span><span></span>
         </div>
         <div>
           <h1>Atoms Demo</h1>
@@ -327,31 +392,26 @@ onMounted(() => {
       </div>
 
       <button class="new-btn" type="button" @click="createProject">
-        <span class="plus">+</span>
-        新建项目
+        <span class="plus">+</span> 新建项目
       </button>
 
       <div class="project-list">
         <button
-          v-for="project in projects"
-          :key="project.id"
-          type="button"
-          class="project-item"
-          :class="{ active: project.id === currentId }"
+          v-for="project in projects" :key="project.id" type="button"
+          class="project-item" :class="{ active: project.id === currentId }"
           @click="selectProject(project.id)"
         >
           <div class="project-meta">
             <span class="project-name">{{ project.name }}</span>
-            <span class="project-time">{{ formatTime(project.updatedAt) }}</span>
+            <span class="project-time">{{ formatTime(project.updated_at) }}</span>
           </div>
-          <span
-            class="delete-btn"
-            title="删除项目"
-            @click="deleteProject(project.id, $event)"
-          >
-            ×
-          </span>
+          <span class="delete-btn" title="删除项目" @click="deleteProject(project.id, $event)">×</span>
         </button>
+      </div>
+
+      <div class="user-profile">
+        <span class="user-email">{{ user.email }}</span>
+        <button class="logout-btn" @click="handleLogout">退出</button>
       </div>
     </aside>
 
@@ -363,12 +423,7 @@ onMounted(() => {
           <p>描述你想要的应用，例如「做一个深色待办清单」或「写一个番茄钟」。</p>
         </div>
 
-        <div
-          v-for="(msg, index) in currentProject?.messages || []"
-          :key="index"
-          class="row"
-          :class="msg.role"
-        >
+        <div v-for="(msg, index) in currentProject?.messages || []" :key="index" class="row" :class="msg.role">
           <div class="bubble" :class="msg.role">
             <div class="role-label">{{ msg.role === 'user' ? '你' : 'Atoms' }}</div>
             <pre class="content">{{
@@ -382,32 +437,16 @@ onMounted(() => {
         <header class="preview-bar">
           <span class="live-dot" :class="{ on: !!previewHtml }"></span>
           <span>实时预览</span>
-          <span class="hint">
-            {{ isStreaming ? '生成中…' : previewHtml ? '已提取 HTML' : '等待代码块' }}
-          </span>
+          <span class="hint">{{ isStreaming ? '生成中…' : previewHtml ? '已提取 HTML' : '等待代码块' }}</span>
           <div class="preview-actions">
-            <button
-              v-if="previewHtml"
-              type="button"
-              title="刷新预览"
-              @click="refreshPreview"
-            >↻ 刷新</button>
-            <button
-              v-if="previewHtml"
-              type="button"
-              title="新窗口打开"
-              @click="openPreviewInNewTab"
-            >↗ 新窗口</button>
+            <button v-if="previewHtml" type="button" title="刷新预览" @click="refreshPreview">↻ 刷新</button>
+            <button v-if="previewHtml" type="button" title="新窗口打开" @click="openPreviewInNewTab">↗ 新窗口</button>
           </div>
         </header>
         <div class="preview-frame">
           <iframe
-            v-if="previewHtml"
-            :key="previewKey"
-            :srcdoc="previewHtml"
-            class="preview-iframe"
-            sandbox="allow-scripts allow-forms allow-modals allow-popups"
-            title="应用预览"
+            v-if="previewHtml" :key="previewKey" :srcdoc="previewHtml"
+            class="preview-iframe" sandbox="allow-scripts allow-forms allow-modals allow-popups" title="应用预览"
           ></iframe>
           <div v-else class="preview-empty">
             {{ isStreaming ? '正在生成应用，请稍候…' : '生成的应用会在这里实时渲染' }}
@@ -417,19 +456,11 @@ onMounted(() => {
 
       <section class="composer">
         <textarea
-          ref="inputRef"
-          v-model="inputText"
-          rows="1"
+          ref="inputRef" v-model="inputText" rows="1"
           placeholder="描述你想生成的应用，回车发送，Shift + Enter 换行"
-          :disabled="isStreaming"
-          @keydown="onKeydown"
+          :disabled="isStreaming" @keydown="onKeydown"
         ></textarea>
-        <button
-          type="button"
-          class="send-btn"
-          :disabled="isStreaming || !inputText.trim()"
-          @click="sendMessage"
-        >
+        <button type="button" class="send-btn" :disabled="isStreaming || !inputText.trim()" @click="sendMessage">
           {{ isStreaming ? '生成中' : '发送' }}
         </button>
       </section>
@@ -438,455 +469,100 @@ onMounted(() => {
 </template>
 
 <style scoped>
-:global(html),
-:global(body),
-:global(#app) {
-  height: 100%;
-  margin: 0;
-}
-
+:global(html), :global(body), :global(#app) { height: 100%; margin: 0; }
 :global(body) {
-  background: #09090b;
-  color: #f4f4f5;
-  font-family:
-    Inter,
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    sans-serif;
+  background: #09090b; color: #f4f4f5;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 
-.app {
-  display: flex;
-  height: 100%;
-  min-height: 100vh;
-  background:
-    radial-gradient(1200px 500px at 80% -10%, rgba(59, 130, 246, 0.12), transparent 50%),
-    #09090b;
-  color: #f4f4f5;
+/* 登录界面样式 */
+.auth-container {
+  height: 100vh; display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(800px 400px at 50% 0%, rgba(59, 130, 246, 0.15), transparent 60%), #09090b;
 }
+.auth-box {
+  width: 100%; max-width: 400px; background: #18181b;
+  border: 1px solid #27272a; border-radius: 16px; padding: 32px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+}
+.auth-box h2 { font-size: 20px; color: #fafafa; }
+.form-group { margin-bottom: 16px; }
+.form-group input {
+  width: 100%; padding: 10px 14px; border-radius: 8px; border: 1px solid #3f3f46;
+  background: #09090b; color: #fafafa; font-size: 14px; outline: none; box-sizing: border-box;
+}
+.form-group input:focus { border-color: #3b82f6; }
+.auth-btn {
+  width: 100%; padding: 12px; background: #2563eb; color: #fff;
+  border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;
+  margin-top: 8px;
+}
+.auth-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.error-msg { color: #ef4444; font-size: 13px; margin-top: -8px; margin-bottom: 12px; }
+.toggle-auth { text-align: center; font-size: 13px; color: #a1a1aa; margin-top: 16px; cursor: pointer; }
+.toggle-auth:hover { color: #3b82f6; }
 
-.sidebar {
-  width: 260px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 20px 16px;
-  background: rgba(17, 17, 19, 0.92);
-  border-right: 1px solid #27272a;
-}
+/* 主应用样式 */
+.app { display: flex; height: 100%; min-height: 100vh; background: radial-gradient(1200px 500px at 80% -10%, rgba(59, 130, 246, 0.12), transparent 50%), #09090b; color: #f4f4f5; }
+.sidebar { width: 260px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px; padding: 20px 16px; background: rgba(17, 17, 19, 0.92); border-right: 1px solid #27272a; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-mark { width: 36px; height: 36px; border-radius: 10px; background: linear-gradient(180deg, #3b82f6, #1d4ed8); display: grid; place-items: center; position: relative; box-shadow: 0 8px 24px rgba(37, 99, 235, 0.35); }
+.brand-mark span { position: absolute; width: 7px; height: 7px; border-radius: 50%; background: #fff; }
+.brand-mark span:nth-child(1) { transform: translate(-6px, -4px); }
+.brand-mark span:nth-child(2) { transform: translate(6px, -4px); }
+.brand-mark span:nth-child(3) { transform: translate(0, 6px); }
+.brand h1 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: 0.01em; }
+.brand p { margin: 2px 0 0; color: #a1a1aa; font-size: 12px; }
+.new-btn { display: flex; align-items: center; justify-content: center; gap: 8px; height: 38px; border: 1px solid #3f3f46; border-radius: 10px; background: #18181b; color: #fafafa; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; }
+.new-btn:hover { background: #27272a; border-color: #52525b; }
+.plus { font-size: 16px; line-height: 1; }
+.project-list { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.project-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 10px 10px 12px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: inherit; text-align: left; cursor: pointer; transition: all 0.15s ease; }
+.project-item:hover { background: #18181b; }
+.project-item.active { background: #18181b; border-color: #27272a; box-shadow: inset 2px 0 0 #3b82f6; }
+.project-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 550; }
+.project-time { color: #71717a; font-size: 11px; }
+.delete-btn { display: none; width: 22px; height: 22px; border-radius: 6px; color: #a1a1aa; font-size: 16px; line-height: 20px; text-align: center; }
+.project-item:hover .delete-btn { display: block; }
+.delete-btn:hover { background: #3f3f46; color: #fecaca; }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
+.user-profile { display: flex; align-items: center; justify-content: space-between; padding-top: 16px; border-top: 1px solid #27272a; }
+.user-email { font-size: 12px; color: #a1a1aa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+.logout-btn { background: transparent; border: 1px solid #3f3f46; color: #fafafa; padding: 4px 8px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+.logout-btn:hover { background: #27272a; }
 
-.brand-mark {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  background: linear-gradient(180deg, #3b82f6, #1d4ed8);
-  display: grid;
-  place-items: center;
-  position: relative;
-  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.35);
-}
-
-.brand-mark span {
-  position: absolute;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #fff;
-}
-
-.brand-mark span:nth-child(1) {
-  transform: translate(-6px, -4px);
-}
-.brand-mark span:nth-child(2) {
-  transform: translate(6px, -4px);
-}
-.brand-mark span:nth-child(3) {
-  transform: translate(0, 6px);
-}
-
-.brand h1 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-}
-
-.brand p {
-  margin: 2px 0 0;
-  color: #a1a1aa;
-  font-size: 12px;
-}
-
-.new-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  height: 38px;
-  border: 1px solid #3f3f46;
-  border-radius: 10px;
-  background: #18181b;
-  color: #fafafa;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease,
-    transform 0.15s ease;
-}
-
-.new-btn:hover {
-  background: #27272a;
-  border-color: #52525b;
-}
-
-.new-btn:active {
-  transform: translateY(1px);
-}
-
-.plus {
-  font-size: 16px;
-  line-height: 1;
-}
-
-.project-list {
-  flex: 1;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.project-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 10px 10px 10px 12px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease;
-}
-
-.project-item:hover {
-  background: #18181b;
-}
-
-.project-item.active {
-  background: #18181b;
-  border-color: #27272a;
-  box-shadow: inset 2px 0 0 #3b82f6;
-}
-
-.project-meta {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.project-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  font-weight: 550;
-}
-
-.project-time {
-  color: #71717a;
-  font-size: 11px;
-}
-
-.delete-btn {
-  display: none;
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  color: #a1a1aa;
-  font-size: 16px;
-  line-height: 20px;
-  text-align: center;
-}
-
-.project-item:hover .delete-btn {
-  display: block;
-}
-
-.delete-btn:hover {
-  background: #3f3f46;
-  color: #fecaca;
-}
-
-.workspace {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 16px;
-  gap: 12px;
-}
-
-.chat {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 8px 8px 4px;
-}
-
-.empty-chat {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: #a1a1aa;
-  text-align: center;
-}
-
-.empty-icon {
-  width: 52px;
-  height: 52px;
-  margin-bottom: 12px;
-  border-radius: 16px;
-  background: #18181b;
-  border: 1px solid #27272a;
-  display: grid;
-  place-items: center;
-  font-size: 24px;
-}
-
-.empty-chat h2 {
-  margin: 0 0 6px;
-  color: #fafafa;
-  font-size: 18px;
-  font-weight: 600;
-}
-
-.empty-chat p {
-  margin: 0;
-  max-width: 360px;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.row {
-  display: flex;
-  margin-bottom: 12px;
-}
-
-.row.user {
-  justify-content: flex-end;
-}
-
-.row.assistant {
-  justify-content: flex-start;
-}
-
-.bubble {
-  max-width: min(72%, 640px);
-  padding: 10px 14px 12px;
-  border-radius: 16px;
-  line-height: 1.55;
-}
-
-.bubble.user {
-  background: linear-gradient(180deg, #3b82f6, #2563eb);
-  color: #fff;
-  border-bottom-right-radius: 6px;
-}
-
-.bubble.assistant {
-  background: #18181b;
-  border: 1px solid #27272a;
-  color: #e4e4e7;
-  border-bottom-left-radius: 6px;
-}
-
-.role-label {
-  margin-bottom: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  opacity: 0.72;
-}
-
-.content {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: inherit;
-  font-size: 13.5px;
-}
-
-.preview {
-  height: 50vh;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid #27272a;
-  border-radius: 14px;
-  overflow: hidden;
-  background: #111113;
-}
-
-.preview-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 40px;
-  padding: 0 12px;
-  border-bottom: 1px solid #27272a;
-  color: #a1a1aa;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.live-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #3f3f46;
-}
-
-.live-dot.on {
-  background: #22c55e;
-  box-shadow: 0 0 8px rgba(34, 197, 94, 0.7);
-}
-
-.hint {
-  margin-left: auto;
-  font-weight: 500;
-}
-
-.preview-actions {
-  display: flex;
-  gap: 6px;
-  margin-left: 12px;
-}
-
-.preview-actions button {
-  background: transparent;
-  border: 1px solid #3f3f46;
-  color: #a1a1aa;
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    color 0.15s ease,
-    border-color 0.15s ease;
-}
-
-.preview-actions button:hover {
-  background: #27272a;
-  color: #fafafa;
-  border-color: #52525b;
-}
-
-.preview-frame {
-  flex: 1;
-  min-height: 0;
-  background: #fff;
-}
-
-.preview-iframe {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: #fff;
-  display: block;
-}
-
-.preview-empty {
-  height: 100%;
-  display: grid;
-  place-items: center;
-  color: #71717a;
-  background: linear-gradient(180deg, #fafafa, #f4f4f5);
-  font-size: 13px;
-}
-
-.composer {
-  flex-shrink: 0;
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  padding: 10px;
-  border: 1px solid #27272a;
-  border-radius: 14px;
-  background: rgba(24, 24, 27, 0.9);
-}
-
-.composer textarea {
-  flex: 1;
-  min-height: 44px;
-  max-height: 120px;
-  resize: none;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: #fafafa;
-  font: inherit;
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.composer textarea::placeholder {
-  color: #71717a;
-}
-
-.send-btn {
-  height: 38px;
-  padding: 0 16px;
-  border: 0;
-  border-radius: 10px;
-  background: #2563eb;
-  color: #fff;
-  font-size: 13px;
-  font-weight: 650;
-  cursor: pointer;
-  transition:
-    opacity 0.15s ease,
-    background 0.15s ease;
-}
-
-.send-btn:hover:not(:disabled) {
-  background: #1d4ed8;
-}
-
-.send-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.project-list::-webkit-scrollbar,
-.chat::-webkit-scrollbar {
-  width: 8px;
-}
-
-.project-list::-webkit-scrollbar-thumb,
-.chat::-webkit-scrollbar-thumb {
-  background: #3f3f46;
-  border-radius: 8px;
-}
+.workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
+.chat { flex: 1; min-height: 0; overflow: auto; padding: 8px 8px 4px; }
+.empty-chat { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #a1a1aa; text-align: center; }
+.empty-icon { width: 52px; height: 52px; margin-bottom: 12px; border-radius: 16px; background: #18181b; border: 1px solid #27272a; display: grid; place-items: center; font-size: 24px; }
+.empty-chat h2 { margin: 0 0 6px; color: #fafafa; font-size: 18px; font-weight: 600; }
+.empty-chat p { margin: 0; max-width: 360px; font-size: 13px; line-height: 1.6; }
+.row { display: flex; margin-bottom: 12px; }
+.row.user { justify-content: flex-end; }
+.row.assistant { justify-content: flex-start; }
+.bubble { max-width: min(72%, 640px); padding: 10px 14px 12px; border-radius: 16px; line-height: 1.55; }
+.bubble.user { background: linear-gradient(180deg, #3b82f6, #2563eb); color: #fff; border-bottom-right-radius: 6px; }
+.bubble.assistant { background: #18181b; border: 1px solid #27272a; color: #e4e4e7; border-bottom-left-radius: 6px; }
+.role-label { margin-bottom: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; opacity: 0.72; }
+.content { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 13.5px; }
+.preview { height: 50vh; flex-shrink: 0; display: flex; flex-direction: column; border: 1px solid #27272a; border-radius: 14px; overflow: hidden; background: #111113; }
+.preview-bar { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; border-bottom: 1px solid #27272a; color: #a1a1aa; font-size: 12px; font-weight: 600; }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: #3f3f46; }
+.live-dot.on { background: #22c55e; box-shadow: 0 0 8px rgba(34, 197, 94, 0.7); }
+.hint { margin-left: auto; font-weight: 500; }
+.preview-actions { display: flex; gap: 6px; margin-left: 12px; }
+.preview-actions button { background: transparent; border: 1px solid #3f3f46; color: #a1a1aa; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 500; cursor: pointer; transition: all 0.15s ease; }
+.preview-actions button:hover { background: #27272a; color: #fafafa; border-color: #52525b; }
+.preview-frame { flex: 1; min-height: 0; background: #fff; }
+.preview-iframe { width: 100%; height: 100%; border: 0; background: #fff; display: block; }
+.preview-empty { height: 100%; display: grid; place-items: center; color: #71717a; background: linear-gradient(180deg, #fafafa, #f4f4f5); font-size: 13px; }
+.composer { flex-shrink: 0; display: flex; align-items: flex-end; gap: 10px; padding: 10px; border: 1px solid #27272a; border-radius: 14px; background: rgba(24, 24, 27, 0.9); }
+.composer textarea { flex: 1; min-height: 44px; max-height: 120px; resize: none; border: 0; outline: none; background: transparent; color: #fafafa; font: inherit; font-size: 14px; line-height: 1.5; }
+.composer textarea::placeholder { color: #71717a; }
+.send-btn { height: 38px; padding: 0 16px; border: 0; border-radius: 10px; background: #2563eb; color: #fff; font-size: 13px; font-weight: 650; cursor: pointer; transition: all 0.15s ease; }
+.send-btn:hover:not(:disabled) { background: #1d4ed8; }
+.send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.project-list::-webkit-scrollbar, .chat::-webkit-scrollbar { width: 8px; }
+.project-list::-webkit-scrollbar-thumb, .chat::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 8px; }
 </style>
