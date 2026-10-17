@@ -6,3 +6,6 @@ compatibility_date = "2024-01-01"
 directory = "./dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
+
+[vars]
+VITE_SUPABASE_ANON_KEY = "sb_publishable_7CTrKLJsiMk2ogb_QncQ0Q_sM94D7jp"
