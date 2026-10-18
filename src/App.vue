@@ -240,6 +240,11 @@ function useSuggestion(text) {
   nextTick(() => inputRef.value?.focus())
 }
 
+// 判断 AI 回复是否为生成的代码（用于决定是否套代码卡片外壳）
+function isCodeReply(content) {
+  return /^\s*```|<!doctype html|<html[\s>]/i.test(content || '')
+}
+
 // ============ 5. 对话与流式生成 ============
 async function sendMessage() {
   const text = inputText.value.trim()
@@ -462,6 +467,14 @@ onMounted(async () => {
     </aside>
 
     <main class="workspace">
+      <header class="topbar">
+        <h2 class="topbar-name">{{ currentProject?.name || '未选择项目' }}</h2>
+        <span class="status-pill" :class="{ live: isStreaming }">
+          <i></i>
+          {{ isStreaming ? '生成中…' : `${currentProject?.messages?.length || 0} 条消息` }}
+        </span>
+      </header>
+
       <section ref="chatRef" class="chat">
         <div v-if="!currentProject?.messages.length" class="empty-chat">
           <div class="empty-icon">⚛</div>
@@ -476,7 +489,16 @@ onMounted(async () => {
 
         <div v-for="(msg, index) in currentProject?.messages || []" :key="index" class="row" :class="msg.role">
           <span class="msg-avatar" :class="msg.role">{{ msg.role === 'user' ? '你' : '⚛' }}</span>
-          <div class="bubble" :class="msg.role">
+
+          <div v-if="msg.role === 'user'" class="bubble user">
+            <p class="text">{{ msg.content }}</p>
+          </div>
+
+          <div v-else class="bubble assistant">
+            <div v-if="msg.content && isCodeReply(msg.content)" class="code-head">
+              <span class="code-lang">HTML</span>
+              <span class="code-size">{{ msg.content.length.toLocaleString() }} 字符</span>
+            </div>
             <pre v-if="msg.content" class="content">{{ msg.content }}</pre>
             <span v-else-if="isStreaming && index === currentProject.messages.length - 1" class="typing" aria-label="正在生成">
               <i></i><i></i><i></i>
@@ -491,17 +513,28 @@ onMounted(async () => {
           <span>实时预览</span>
           <span class="hint">{{ isStreaming ? '生成中…' : previewHtml ? '已提取 HTML' : '等待代码块' }}</span>
           <div class="preview-actions">
-            <button v-if="previewHtml" type="button" title="刷新预览" @click="refreshPreview">刷新</button>
-            <button v-if="previewHtml" type="button" title="新窗口打开" @click="openPreviewInNewTab">新窗口</button>
+            <button v-if="previewHtml" type="button" title="刷新预览" @click="refreshPreview">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" />
+              </svg>
+              刷新
+            </button>
+            <button v-if="previewHtml" type="button" title="新窗口打开" @click="openPreviewInNewTab">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+              </svg>
+              新窗口
+            </button>
           </div>
         </header>
-        <div class="preview-frame">
+        <div class="preview-stage">
           <iframe
             v-if="previewHtml" :key="previewKey" :srcdoc="previewHtml"
             class="preview-iframe" sandbox="allow-scripts allow-forms allow-modals allow-popups" title="应用预览"
           ></iframe>
           <div v-else class="preview-empty">
-            {{ isStreaming ? '正在生成应用，请稍候…' : '生成的应用会在这里实时渲染' }}
+            <div class="ghost" aria-hidden="true"><span></span><span></span><span></span></div>
+            <p>{{ isStreaming ? '正在生成应用，请稍候…' : '生成的应用会在这里实时渲染' }}</p>
           </div>
         </div>
       </section>
@@ -799,6 +832,22 @@ onMounted(async () => {
   position: relative; z-index: 1; flex: 1; min-width: 0;
   display: flex; flex-direction: column; gap: 12px; padding: 16px;
 }
+
+.topbar { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 0 2px; }
+.topbar-name {
+  margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 14.5px; font-weight: 650; letter-spacing: -0.01em;
+}
+.status-pill {
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0; margin-left: auto;
+  padding: 4px 11px; border: 1px solid var(--line); border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03); font-size: 11.5px; color: var(--fg-2);
+}
+.status-pill i { width: 6px; height: 6px; border-radius: 50%; background: #4ade80; }
+.status-pill.live { border-color: rgba(75, 131, 240, 0.35); background: rgba(75, 131, 240, 0.12); color: #cfe0ff; }
+.status-pill.live i { background: var(--brand); animation: ping 1s ease-in-out infinite; }
+@keyframes ping { 50% { opacity: 0.25; transform: scale(0.7); } }
+
 .chat { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 6px 8px 2px; }
 
 .empty-chat {
@@ -827,8 +876,13 @@ onMounted(async () => {
 }
 
 /* ---------- 消息 ---------- */
-.row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
+.row {
+  display: flex; align-items: flex-start; gap: 10px; margin-bottom: 16px;
+  animation: msg-in 0.32s var(--ease) both;
+}
 .row.user { flex-direction: row-reverse; }
+@keyframes msg-in { from { opacity: 0; transform: translateY(6px); } }
+
 .msg-avatar {
   display: grid; place-items: center; flex-shrink: 0;
   width: 30px; height: 30px; border-radius: 10px;
@@ -842,28 +896,45 @@ onMounted(async () => {
   border: 1px solid var(--line-strong); background: rgba(255, 255, 255, 0.05);
   color: var(--fg-2); font-size: 14px;
 }
-.bubble {
-  max-width: min(78%, 660px); padding: 11px 14px;
-  border-radius: 14px; line-height: 1.6;
-}
+
+.bubble { max-width: min(78%, 660px); border-radius: 14px; line-height: 1.6; }
 .bubble.user {
+  padding: 11px 14px;
   border: 1px solid rgba(75, 131, 240, 0.4);
   background: linear-gradient(180deg, rgba(61, 123, 240, 0.3), rgba(39, 87, 196, 0.22));
   border-bottom-right-radius: 5px;
 }
+.text {
+  margin: 0; white-space: pre-wrap; word-break: break-word;
+  font-size: 13.5px; line-height: 1.55; color: #fff;
+}
+
 .bubble.assistant {
+  padding: 0; overflow: hidden;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.035);
   border-bottom-left-radius: 5px;
 }
-.content {
-  margin: 0; white-space: pre-wrap; word-break: break-word;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
-  font-size: 12.5px; line-height: 1.62; color: #d6d6de;
+.code-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px; border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.035);
 }
-.bubble.user .content { font-family: inherit; font-size: 13.5px; color: #fff; }
+.code-lang {
+  padding: 2px 7px; border-radius: 5px;
+  background: rgba(75, 131, 240, 0.16); color: #9dc0ff;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+}
+.code-size { margin-left: auto; font-size: 10.5px; color: var(--fg-3); }
 
-.typing { display: inline-flex; gap: 4px; padding: 4px 0 2px; }
+.content {
+  margin: 0; padding: 12px 14px; max-height: 300px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 12.5px; line-height: 1.65; color: #cfcfd8;
+}
+
+.typing { display: inline-flex; gap: 4px; margin: 12px 14px; }
 .typing i {
   width: 6px; height: 6px; border-radius: 50%; background: var(--fg-3);
   animation: typing-blink 1.3s ease-in-out infinite;
@@ -900,23 +971,53 @@ onMounted(async () => {
 .hint { margin-left: auto; font-size: 11.5px; font-weight: 500; color: var(--fg-3); }
 .preview-actions { display: flex; gap: 6px; margin-left: 4px; }
 .preview-actions button {
+  display: inline-flex; align-items: center; gap: 5px;
   padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px;
   background: transparent; color: var(--fg-2);
   font: inherit; font-size: 11px; font-weight: 500; cursor: pointer;
   transition: all 0.16s;
 }
+.preview-actions button svg { width: 12px; height: 12px; }
 .preview-actions button:hover {
   border-color: rgba(75, 131, 240, 0.5);
   background: rgba(75, 131, 240, 0.14);
   color: #cfe0ff;
 }
-.preview-frame { flex: 1; min-height: 0; background: #fff; }
-.preview-iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
-.preview-empty {
-  height: 100%; display: grid; place-items: center;
-  background: linear-gradient(180deg, #fbfbfc, #f1f1f4);
-  color: #9a9aa6; font-size: 13px;
+
+/* 预览舞台：深色底 + 点阵网格，iframe 像浮在上面的设备 */
+.preview-stage {
+  flex: 1; min-height: 0; display: flex; padding: 12px;
+  background:
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.07) 1px, transparent 0) 0 0 / 18px 18px,
+    linear-gradient(180deg, #101016, #0a0a0e);
 }
+.preview-iframe {
+  flex: 1; min-height: 0; width: 100%; border: 0; border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 18px 40px -24px rgba(0, 0, 0, 1), 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.preview-empty {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  border: 1px dashed rgba(255, 255, 255, 0.12); border-radius: 10px;
+  background: rgba(255, 255, 255, 0.015);
+  color: var(--fg-3); font-size: 12.5px;
+}
+.preview-empty p { margin: 0; }
+.ghost {
+  display: flex; flex-direction: column; gap: 7px;
+  width: 128px; padding: 12px;
+  border: 1px dashed rgba(255, 255, 255, 0.14); border-radius: 9px;
+}
+.ghost span {
+  height: 6px; border-radius: 3px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.07));
+  background-size: 200% 100%;
+  animation: ghost-shimmer 2.4s linear infinite;
+}
+.ghost span:nth-child(2) { width: 58%; }
+.ghost span:nth-child(3) { width: 78%; }
+@keyframes ghost-shimmer { to { background-position: -200% 0; } }
 
 /* ---------- 输入区 ---------- */
 .composer {
